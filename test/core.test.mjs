@@ -154,6 +154,37 @@ test('stacked grouping breaks day buckets down by series', () => {
   assert.equal(plain.groups[0].series, undefined, 'plain grouping keeps the flat shape');
 });
 
+test('time granularity buckets and the 1000-bucket guardrail coarsen', () => {
+  const tz = 'Asia/Shanghai';
+  const noon = Date.UTC(2026, 9, 8, 4, 30, 0); // 2026-10-08 12:30 Asia/Shanghai
+  const records = [
+    { time: noon, provider: 'p', model: 'm', input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, sessionId: 'a' },        // 12:30
+    { time: noon + 45 * 60000, provider: 'p', model: 'm', input: 2, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, sessionId: 'a' } // 13:15
+  ];
+  const hourly = buildSummary(records, { timeZone: tz, range: 'all', groupBy: 'hour' });
+  assert.equal(hourly.groups.length, 2, '12:30 and 13:15 land in different hour buckets');
+  assert.equal(hourly.groups[0].key, '2026-10-08 12:00');
+  const byHalfHour = buildSummary(records, { timeZone: tz, range: 'all', groupBy: '30m' });
+  assert.equal(byHalfHour.groups.length, 2);
+  assert.equal(byHalfHour.groups[0].key, '2026-10-08 12:30');
+  const quarter = buildSummary(records, { timeZone: tz, range: 'all', groupBy: '15m' });
+  assert.equal(quarter.groups.length, 2);
+  assert.equal(quarter.groups[0].key, '2026-10-08 12:30');
+
+  // A 3-year window at 30m granularity is ~105k buckets: the guardrail coarsens.
+  const longAgo = Date.UTC(2023, 0, 8, 4, 0, 0);
+  const longRecords = [
+    { time: longAgo, provider: 'p', model: 'm', input: 1, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, sessionId: 'x' },
+    { time: noon, provider: 'p', model: 'm', input: 1, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, sessionId: 'x' }
+  ];
+  const coarsened = buildSummary(longRecords, { timeZone: tz, range: 'all', groupBy: '30m' });
+  assert.equal(coarsened.requestedGroupBy, '30m');
+  assert.equal(coarsened.groupBy, 'week', 'a ~3.75-year span coarsens past hour and day to week');
+  const weekBucket = buildSummary(longRecords, { timeZone: tz, range: 'all', groupBy: 'week' });
+  assert.ok(/^202\d-\d\d-\d\d$/.test(weekBucket.groups[0].key), 'week keys are Monday dates');
+  assert.ok(weekBucket.groups.every((row, index) => index === 0 || weekBucket.groups[index - 1].key <= row.key), 'time buckets sort ascending');
+});
+
 test('live scan reproduces the dsh-usage ledger for stable days', (t) => {
   const home = process.env.HOME ? join(process.env.HOME, '.dsh') : null;
   const ledgerPath = home ? join(home, 'dsh-usage', 'usage-ledger.json') : null;
