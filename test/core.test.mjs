@@ -127,6 +127,33 @@ test('custom range is one-sided aware and cycle lands on the refresh day', () =>
   assert.equal(resolveRange('cycle', { timeZone: tz, cycleDay: 31, now: midFebruary }).fromDay, '2026-01-31');
 });
 
+test('stacked grouping breaks day buckets down by series', () => {
+  const records = [
+    { time: 1788796900000, provider: 'deepseek', model: 'glm-5.3', input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0, sessionId: 'a' },   // 2026-09-08
+    { time: 1788796900000, provider: 'deepseek', model: 'deepseek-v4', input: 100, output: 50, cacheRead: 0, cacheWrite: 0, reasoning: 0, sessionId: 'a' },
+    { time: 1788883300000, provider: 'kimi', model: 'kimi-k3', input: 1, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, sessionId: 'b' }        // 2026-09-09
+  ];
+  const summary = buildSummary(records, { timeZone: 'Asia/Shanghai', range: 'all', groupBy: 'day', series: 'model' });
+  assert.equal(summary.series, 'model');
+  assert.equal(summary.seriesOrder.length, 3);
+  assert.equal(summary.seriesOrder[0].key, 'deepseek / deepseek-v4', 'series ranked by grand total desc');
+  assert.equal(summary.groups.length, 2);
+  const day1 = summary.groups[0];
+  assert.equal(day1.key, '2026-09-08');
+  assert.equal(day1.total, 165);
+  assert.equal(day1.calls, 2);
+  const byKey = new Map(day1.series.map((entry) => [entry.key, entry]));
+  assert.equal(byKey.get('deepseek / glm-5.3').total, 15);
+  assert.equal(byKey.get('deepseek / deepseek-v4').total, 150);
+  // Series totals never exceed the day total.
+  assert.equal(day1.series.reduce((sum, entry) => sum + entry.total, 0), day1.total);
+
+  const plain = buildSummary(records, { timeZone: 'Asia/Shanghai', range: 'all', groupBy: 'day' });
+  assert.equal(plain.series, undefined);
+  assert.equal(plain.seriesOrder, undefined);
+  assert.equal(plain.groups[0].series, undefined, 'plain grouping keeps the flat shape');
+});
+
 test('live scan reproduces the dsh-usage ledger for stable days', (t) => {
   const home = process.env.HOME ? join(process.env.HOME, '.dsh') : null;
   const ledgerPath = home ? join(home, 'dsh-usage', 'usage-ledger.json') : null;
